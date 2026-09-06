@@ -419,6 +419,35 @@ migration applied, since it depends on the unique index existing.
 
 ---
 
+## N15. Security headers
+
+**Problem.** No Content-Security-Policy, no `X-Content-Type-Options`, no frame
+protection. The app was framable, and the stored XSS in C5 had nothing behind it
+if the escaping fix were ever regressed.
+
+**Why this solution.** `helmet` with an explicit CSP rather than its defaults.
+`useDefaults: false` so the policy is the list in the file and not a merge with
+whatever the library ships this version, which is the kind of thing that drifts
+silently on upgrade.
+
+**Choices worth knowing about.**
+
+- The inline `<style>` block in `index.html` moved to `web/styles.css` in the C5
+  commit. Keeping it would have required `'unsafe-inline'` on `style-src`, which
+  weakens the policy for the sake of one block of CSS. Moving it costs one request
+  and buys a strict directive.
+- `'self'` in `connect-src` covers the same-origin WebSocket in current browsers.
+  Noted in a comment, because if a socket ever gets blocked that directive is
+  where to look and the reason is not obvious.
+- `frame-ancestors 'none'` and `base-uri 'none'`, since neither framing nor a
+  rewritten base URL has any legitimate use here.
+
+**Verification.** Fetched a response through the same middleware configuration and
+read the headers back: CSP present with all nine directives, `nosniff`,
+frame options, `no-referrer`, and no `x-powered-by`.
+
+---
+
 ## Regression test suite
 
 **Problem.** Fifteen commits of fixes, verified one at a time and mostly by hand.
