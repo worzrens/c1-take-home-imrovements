@@ -1,3 +1,11 @@
+-- Verbatim copy of the schema that used to live in docker/db/mysql.sql, so an
+-- existing database can be baselined by inserting this name into _migrations
+-- rather than re-running DDL against tables that already exist.
+--
+-- Known problems with this schema are deliberately preserved here and fixed in
+-- later migrations: no indexes (C9), no foreign keys (C9), TIMESTAMP with
+-- second granularity (N6), no unique constraint on client_id (N5).
+
 SET NAMES utf8mb4;
 
 CREATE TABLE users (
@@ -25,20 +33,3 @@ CREATE TABLE messages (
   client_id VARCHAR(64) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
-INSERT INTO users (id, name, email) VALUES
-  (1, 'Alice', 'alice@example.com'),
-  (2, 'Bob', 'bob@example.com'),
-  (3, 'Carol', 'carol@example.com');
-
-INSERT INTO conversations (id, title) VALUES
-  (1, 'Support — order #1042'),
-  (2, 'Design sync');
-
-INSERT INTO conversation_participants (conversation_id, user_id) VALUES
-  (1, 1), (1, 2), (2, 1), (2, 3);
-
-INSERT INTO messages (id, conversation_id, sender_id, client_id) VALUES
-  (1, 1, 2, NULL),
-  (2, 1, 1, NULL),
-  (3, 2, 3, NULL);

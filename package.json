@@ -6,12 +6,15 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
+    "migrate": "tsx src/db/migrate.ts",
+    "migrate:down": "tsx src/db/migrate.ts down",
     "seed": "tsx docker/db/seed.ts"
   },
   "dependencies": {
     "express": "^4.19.2",
     "mongodb": "^6.8.0",
     "mysql2": "^3.11.3",
+    "umzug": "^3.8.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
