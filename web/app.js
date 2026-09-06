@@ -16,8 +16,21 @@ function renderSidebar() {
   for (const c of conversations) {
     const li = document.createElement('li');
     if (c.id === activeConversation) li.className = 'active';
-    li.innerHTML =
-      `<span>${c.title} (${c.messageCount})</span>` + (c.unread ? '<span class="dot">●</span>' : '');
+
+    // Built as nodes, not innerHTML. The title is attacker-controlled: anyone
+    // could create a conversation whose title was markup and it executed in the
+    // browser of every participant when their sidebar rendered.
+    const label = document.createElement('span');
+    label.textContent = `${c.title} (${c.messageCount})`;
+    li.appendChild(label);
+
+    if (c.unread) {
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.textContent = '●';
+      li.appendChild(dot);
+    }
+
     li.onclick = () => openConversation(c.id, c.title);
     list.appendChild(li);
   }
@@ -60,7 +73,14 @@ function appendMessage(m) {
   const pane = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = 'msg';
-  div.textContent = `#${m.senderId}: ${m.body}`;
+  if (m.body === null) {
+    // The row exists but its body does not. Say so rather than showing a blank
+    // line that reads as an empty message.
+    div.textContent = `#${m.senderId}: (message unavailable)`;
+    div.style.color = '#999';
+  } else {
+    div.textContent = `#${m.senderId}: ${m.body}`;
+  }
   pane.appendChild(div);
   pane.scrollTop = pane.scrollHeight;
 }

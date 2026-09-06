@@ -37,15 +37,24 @@ await pool.query(
 await connectMongo();
 const bodies = mongo().collection('message_bodies');
 
-// TODO(C6): this wipe destroys the body of every message sent since the last
-// boot while MySQL keeps the rows, so old messages render blank. Left as-is
-// here to keep this commit to one change; fixed in the C6 step.
-await bodies.deleteMany({});
-await bodies.insertMany([
-  { _id: 1 as never, conversationId: 1, senderId: 2, body: 'Hi, any update on order #1042?', createdAt: new Date() },
-  { _id: 2 as never, conversationId: 1, senderId: 1, body: 'Checking now — give me a minute.', createdAt: new Date() },
-  { _id: 3 as never, conversationId: 2, senderId: 3, body: 'Notes from the design sync are in the doc.', createdAt: new Date() },
-]);
+// This used to be deleteMany({}) followed by insertMany. Because the MySQL side
+// was seeded only on an empty data directory, a restart left the message rows in
+// place while their bodies were destroyed, and every older message rendered
+// blank for good. Upsert with $setOnInsert instead: a rerun touches nothing, and
+// bodies written by real traffic are never in scope.
+const demo = [
+  { _id: 1, conversationId: 1, senderId: 2, body: 'Hi, any update on order #1042?' },
+  { _id: 2, conversationId: 1, senderId: 1, body: 'Checking now, give me a minute.' },
+  { _id: 3, conversationId: 2, senderId: 3, body: 'Notes from the design sync are in the doc.' },
+];
+
+for (const doc of demo) {
+  await bodies.updateOne(
+    { _id: doc._id as never },
+    { $setOnInsert: { ...doc, createdAt: new Date() } },
+    { upsert: true },
+  );
+}
 
 console.log('seeded demo users, conversations and messages');
 process.exit(0);

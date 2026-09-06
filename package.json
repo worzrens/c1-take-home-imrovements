@@ -8,7 +8,11 @@
     "dev": "tsx watch src/index.ts",
     "migrate": "tsx src/db/migrate.ts",
     "migrate:down": "tsx src/db/migrate.ts down",
-    "seed": "tsx docker/db/seed.ts"
+    "seed": "tsx docker/db/seed.ts",
+    "reconcile": "tsx src/db/reconcile.ts",
+    "test": "node --import tsx --test --test-isolation=none --test-force-exit test/unit/*.test.ts test/http/*.test.ts test/db/*.test.ts",
+    "pretest:db": "docker compose up -d --wait mysql mongo && docker compose run --rm migrate && docker compose run --rm seed",
+    "test:db": "MYSQL_URL=mysql://root:root@127.0.0.1:3306/relay?charset=utf8mb4 MONGO_URL=mongodb://127.0.0.1:27017/relay npm test"
   },
   "dependencies": {
     "express": "^4.19.2",

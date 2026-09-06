@@ -1,20 +1,14 @@
 import http from 'node:http';
-import express from 'express';
 import { config } from './config.ts';
 import { waitForMysql } from './db/mysql.ts';
 import { connectMongo } from './db/mongo.ts';
-import { conversationsRouter } from './routes/conversations.js';
-import { messagesRouter } from './routes/messages.js';
-import { searchRouter } from './routes/search.js';
+import { createApp } from './app.ts';
 import { attachWs } from './ws/hub.ts';
+import { installProcessHandlers } from './http/errors.ts';
 
-const app = express();
-app.use(express.json());
-app.use(express.static('web'));
-app.use('/api/conversations', conversationsRouter);
-app.use('/api/messages', messagesRouter);
-app.use('/api/search', searchRouter);
+installProcessHandlers();
 
+const app = createApp();
 const server = http.createServer(app);
 attachWs(server);
 

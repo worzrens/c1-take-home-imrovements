@@ -57,6 +57,8 @@ services:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: relay
     ports: ["3306:3306"]
+    volumes:
+      - mysql-data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
       interval: 5s
@@ -67,7 +69,16 @@ services:
   mongo:
     image: mongo:7
     ports: ["27017:27017"]
+    volumes:
+      - mongo-data:/data/db
 
   redis:
     image: redis:7
     expose: ["6379"]
+
+# Both stores keep their data across `docker compose down`. They used to have no
+# volumes at all, so their lifecycles could drift apart, which is what let MySQL
+# keep message rows whose bodies had gone.
+volumes:
+  mysql-data:
+  mongo-data:

@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { pool } from '../db/mysql.ts';
 import { mongo } from '../db/mongo.ts';
 
@@ -12,10 +11,6 @@ export interface NewMessage {
 export async function createMessage(input: NewMessage) {
   const { conversationId, senderId, body, clientId } = input;
 
-  const signature = crypto
-    .pbkdf2Sync(body, 'relay-signing', 200000, 32, 'sha256')
-    .toString('hex');
-
   const [res] = await pool.execute(
     'INSERT INTO messages (conversation_id, sender_id, client_id) VALUES (?, ?, ?)',
     [conversationId, senderId, clientId],
@@ -23,14 +18,34 @@ export async function createMessage(input: NewMessage) {
   const id = (res as { insertId: number }).insertId;
 
   const createdAt = new Date();
-  await mongo().collection('message_bodies').insertOne({
-    _id: id as never,
-    conversationId,
-    senderId,
-    body,
-    signature,
-    createdAt,
-  });
+
+  // Two stores, no transaction spanning them. The MySQL row is already committed
+  // by this point, so a failure here used to leave a message that exists but has
+  // no body, permanently and silently.
+  //
+  // This is compensation, not atomicity: the delete can itself fail, and a crash
+  // between the two leaves the same orphan. It converts the common case from
+  // silent corruption into a clean error, which is the most this shape allows.
+  // Real atomicity needs a transactional outbox or one datastore. See the
+  // datastore-split decision in the fix plan.
+  try {
+    await mongo().collection('message_bodies').insertOne({
+      _id: id as never,
+      conversationId,
+      senderId,
+      body,
+      createdAt,
+    });
+  } catch (err) {
+    try {
+      await pool.execute('DELETE FROM messages WHERE id = ?', [id]);
+    } catch (cleanupErr) {
+      // Losing the compensation is worse than the original failure, because the
+      // orphan is now invisible. Log loudly; `npm run reconcile` finds these.
+      console.error('[data] orphaned message row', id, cleanupErr);
+    }
+    throw err;
+  }
 
   return { id, conversationId, senderId, body, createdAt };
 }

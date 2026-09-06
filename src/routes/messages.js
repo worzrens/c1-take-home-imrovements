@@ -3,10 +3,11 @@ import { createMessage } from '../services/messages.ts';
 import { pool } from '../db/mysql.ts';
 import { mongo } from '../db/mongo.ts';
 import { broadcast } from '../ws/hub.ts';
+import { wrap } from '../http/errors.ts';
 
 export const messagesRouter = express.Router();
 
-messagesRouter.post('/', async (req, res) => {
+messagesRouter.post('/', wrap(async (req, res) => {
   const { conversationId, senderId, body, clientId } = req.body || {};
   if (!conversationId || !senderId || !body) {
     return res.status(400).json({ error: 'conversationId, senderId and body are required' });
@@ -21,9 +22,9 @@ messagesRouter.post('/', async (req, res) => {
 
   broadcast(msg.conversationId, { type: 'message', ...msg });
   res.status(201).json(msg);
-});
+}));
 
-messagesRouter.get('/', async (req, res) => {
+messagesRouter.get('/', wrap(async (req, res) => {
   const conversationId = Number(req.query.conversationId);
   if (!conversationId) return res.status(400).json({ error: 'conversationId is required' });
 
@@ -39,5 +40,12 @@ messagesRouter.get('/', async (req, res) => {
     : [];
   const bodyById = new Map(bodies.map((b) => [b._id, b.body]));
 
-  res.json(rows.map((r) => ({ ...r, body: bodyById.get(r.id) ?? '' })));
-});
+  // A missing body means the two stores disagree. Reporting it as an empty string
+  // made that look like an empty message and hid real data loss for a long time.
+  const missing = rows.filter((r) => !bodyById.has(r.id)).map((r) => r.id);
+  if (missing.length) {
+    console.error('[data] message rows with no body in mongo:', missing.join(','));
+  }
+
+  res.json(rows.map((r) => ({ ...r, body: bodyById.has(r.id) ? bodyById.get(r.id) : null })));
+}));
