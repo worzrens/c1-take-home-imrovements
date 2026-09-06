@@ -13,6 +13,10 @@ import { errorHandler } from './http/errors.ts';
 export function createApp() {
   const app = express();
 
+  // Express advertises itself in a response header by default. It tells an
+  // attacker what to look up and tells a user nothing.
+  app.disable('x-powered-by');
+
   app.use(express.json());
   app.use(express.static('web'));
   app.use('/api/conversations', conversationsRouter);

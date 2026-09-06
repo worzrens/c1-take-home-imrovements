@@ -13,6 +13,11 @@ services:
     command: npm start
     restart: on-failure
     env_file: .env
+    # Without this Express runs its development error handler, which serialises
+    # the full stack trace into the response body. Malformed JSON was enough to
+    # get filesystem paths and dependency internals back from the API.
+    environment:
+      NODE_ENV: production
     expose: ["3000"]
     depends_on:
       seed:

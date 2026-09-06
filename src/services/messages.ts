@@ -17,7 +17,13 @@ export async function createMessage(input: NewMessage) {
   );
   const id = (res as { insertId: number }).insertId;
 
-  const createdAt = new Date();
+  // Read the timestamp back rather than generating one in Node. The row already
+  // has a value from the column default, and a second clock produces a different
+  // answer: the one broadcast over the WebSocket disagreed with the one returned
+  // on reload, by clock skew and always by up to a second while the column was a
+  // TIMESTAMP.
+  const [stored] = await pool.query('SELECT created_at AS createdAt FROM messages WHERE id = ?', [id]);
+  const createdAt = (stored as { createdAt: Date }[])[0].createdAt;
 
   // Two stores, no transaction spanning them. The MySQL row is already committed
   // by this point, so a failure here used to leave a message that exists but has

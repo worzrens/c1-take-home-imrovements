@@ -268,6 +268,93 @@ file, and there is now none.
 
 ---
 
+## N1. Removed the N+1 in the conversation list
+
+**Problem.** `GET /api/conversations` ran two queries per conversation inside a
+`for` loop, each awaited in turn. A user in 50 conversations meant 101 sequential
+round trips for one page load, and each of those queries was a full table scan
+until C9.
+
+**Why this solution.** Three queries with a fixed count: the user's conversations,
+then one grouped pass giving message count and last message id per conversation,
+then one lookup of those last messages by primary key. A single joined query was
+possible but needs a derived table plus a self join to get the last row per
+group, and it reads worse than three obvious statements. Three round trips
+regardless of conversation count was the goal, not one.
+
+**Choices worth knowing about.**
+
+- The response shape is unchanged, including `lastMessage: null` for a
+  conversation with no messages, so nothing downstream had to move.
+- The assembly step is a separate exported function rather than inline, so the
+  part where the bugs actually live can be tested without a database.
+- Early return when the user has no conversations, which also avoids sending an
+  empty `IN ()` to MySQL.
+
+**Verification.** Drove the assembly function with fake result sets covering a
+conversation with several messages, one with a single message, and one with none.
+Counts, last messages, null handling and ordering all correct. The queries
+themselves still need a live database.
+
+---
+
+## N6. One timestamp, from the database
+
+**Problem.** `created_at` was a `TIMESTAMP`, which has second granularity and
+stops working in 2038, so two messages sent in the same second were
+indistinguishable by time. Worse, the value returned by the API was a separate
+`new Date()` generated in Node, so the timestamp broadcast over the WebSocket and
+the one seen after a reload disagreed, by clock skew and always by up to a second
+from the truncation.
+
+**Why this solution.** `DATETIME(3)` in migration 0003, and the service reads the
+stored value back instead of inventing one. Two clocks producing two answers for
+one event is the actual bug; picking a better clock in Node would not fix it.
+
+**Choices worth knowing about.**
+
+- Reading back costs one extra query, a primary key lookup on a row just written.
+  The alternative, generating the value in Node and inserting it explicitly, keeps
+  the round trip but makes the application the source of truth for time across
+  instances with skewed clocks. Ordering is by `id` anyway, so the database is the
+  better authority here.
+- `DATETIME` rather than keeping `TIMESTAMP` with fractional seconds, because the
+  2038 limit is real and this is a cheap moment to leave it behind.
+
+**Migration caveat, recorded in the file too.** `TIMESTAMP` stores UTC and
+converts on read using the session time zone; `DATETIME` stores the literal value.
+Converting existing rows is clean when the server runs in UTC, which the
+containers do. Anywhere else, check the session time zone before running it.
+
+---
+
+## N4. Production mode, and a dependency that was in the wrong list
+
+**Problem.** `NODE_ENV` was never set anywhere, so Express ran its development
+error handler, which serialises the full stack trace into the response body. The
+reachable trigger is `express.json()`: malformed JSON makes body-parser call
+`next(err)` synchronously, which does reach the default handler, unlike a rejected
+route promise. Absolute filesystem paths and dependency internals came back to the
+caller. `x-powered-by` was also left on.
+
+**Why this solution.** `NODE_ENV=production` on the api service and
+`app.disable('x-powered-by')`. The error handler added in C2 already returns an
+opaque body, so this closes the remaining path, which is errors raised before any
+route runs.
+
+**The related fix.** Setting `NODE_ENV=production` made me notice that `tsx` was in
+`devDependencies` while `npm start` is `tsx src/index.ts`. It is a runtime
+dependency. Left where it was, it vanishes the moment anything installs with
+`--omit=dev` or with `NODE_ENV=production` set at build time, and the container
+fails to start with a confusing missing-binary error. Moved to `dependencies`.
+That trap was one Dockerfile edit away from being sprung.
+
+**Verification.** The stack-leak path was already covered by the C2 check, which
+showed a 400 with the parser message and no stack. This commit removes the case
+where an error is raised before the wrapper is in play.
+
+---
+
 ## Regression test suite
 
 **Problem.** Fifteen commits of fixes, verified one at a time and mostly by hand.
