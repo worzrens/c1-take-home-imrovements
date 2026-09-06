@@ -355,6 +355,41 @@ where an error is raised before the wrapper is in play.
 
 ---
 
+## N2. Paginated message history
+
+**Problem.** `GET /api/messages` selected every message in a conversation with no
+limit, then sent every one of those ids to Mongo in a single `$in`. One busy
+conversation exhausted memory on the server and the browser at the same time.
+
+**Why this solution.** Keyset pagination on `id` rather than `LIMIT`/`OFFSET`.
+Seeking by id uses the index added in C9 and stays constant cost however deep the
+history goes, where a deep `OFFSET` still walks everything it skips. Keyset also
+cannot skip or repeat a row when new messages arrive between one page and the
+next, which matters in a chat app where that happens constantly.
+
+**Choices worth knowing about.**
+
+- The query asks for one row more than the caller wanted. The surplus is what
+  reveals an older page exists, so `hasMore` costs nothing extra.
+- The response is now an object rather than a bare array, carrying `hasMore` and
+  `nextBefore` alongside `messages`. The client was updated in the same commit
+  since the shape is a breaking change.
+- Rows are fetched newest first, because that is the page a reader wants, then
+  reversed before sending so the client can append in reading order.
+- Loading older messages preserves scroll position by measuring height before and
+  after the prepend. Without that the reader is thrown to the top of the pane on
+  every fetch.
+- `limit` is capped at 200 server side. A client asking for more gets 200 rather
+  than an error, since the cap is our concern and not theirs.
+
+**Verification.** Walked a fake 125-row table through the real page-shaping
+function at 50 per page. Three pages, every row seen exactly once and in order, no
+gaps and no duplicates, cursor terminates. Also checked an empty conversation and
+the boundary where the last page is exactly full, which is the case that reports
+`hasMore: true` incorrectly if the surplus row is mishandled.
+
+---
+
 ## Regression test suite
 
 **Problem.** Fifteen commits of fixes, verified one at a time and mostly by hand.

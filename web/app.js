@@ -3,6 +3,12 @@ let ws;
 let activeConversation;
 let conversations = [];
 
+// Cursor into the history of the open conversation. `olderCursor` is the id of
+// the oldest message on screen; anything older is fetched on demand.
+let olderCursor = null;
+let hasOlder = false;
+let loadingOlder = false;
+
 async function loadConversations() {
   const res = await fetch(`/api/conversations?userId=${userId}`);
   conversations = await res.json();
@@ -55,6 +61,16 @@ function connectWs() {
   };
 }
 
+async function loadPage(conversationId, before) {
+  const params = new URLSearchParams({ conversationId });
+  if (before) params.set('before', before);
+  const res = await fetch(`/api/messages?${params}`);
+  const page = await res.json();
+  hasOlder = page.hasMore;
+  olderCursor = page.nextBefore;
+  return page.messages;
+}
+
 async function openConversation(id, title) {
   activeConversation = id;
   const c = conversations.find((x) => x.id === id);
@@ -62,15 +78,34 @@ async function openConversation(id, title) {
   renderSidebar();
 
   document.getElementById('title').textContent = title;
-  const res = await fetch(`/api/messages?conversationId=${id}`);
-  const messages = await res.json();
   const pane = document.getElementById('messages');
   pane.innerHTML = '';
-  for (const m of messages) appendMessage(m);
+  olderCursor = null;
+  hasOlder = false;
+
+  // Only the newest page. The history used to load in full, however long it was.
+  for (const m of await loadPage(id, null)) appendMessage(m);
 }
 
-function appendMessage(m) {
-  const pane = document.getElementById('messages');
+document.getElementById('messages').addEventListener('scroll', async (e) => {
+  const pane = e.target;
+  if (pane.scrollTop > 0 || !hasOlder || loadingOlder || !activeConversation) return;
+
+  loadingOlder = true;
+  try {
+    const heightBefore = pane.scrollHeight;
+    const older = await loadPage(activeConversation, olderCursor);
+    const batch = document.createDocumentFragment();
+    for (const m of older) batch.appendChild(messageNode(m));
+    pane.insertBefore(batch, pane.firstChild);
+    // Keep the reader looking at the same message rather than jumping to the top.
+    pane.scrollTop = pane.scrollHeight - heightBefore;
+  } finally {
+    loadingOlder = false;
+  }
+});
+
+function messageNode(m) {
   const div = document.createElement('div');
   div.className = 'msg';
   if (m.body === null) {
@@ -81,7 +116,12 @@ function appendMessage(m) {
   } else {
     div.textContent = `#${m.senderId}: ${m.body}`;
   }
-  pane.appendChild(div);
+  return div;
+}
+
+function appendMessage(m) {
+  const pane = document.getElementById('messages');
+  pane.appendChild(messageNode(m));
   pane.scrollTop = pane.scrollHeight;
 }
 
