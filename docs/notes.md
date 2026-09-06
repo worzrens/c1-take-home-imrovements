@@ -390,6 +390,35 @@ the boundary where the last page is exactly full, which is the case that reports
 
 ---
 
+## N5. `client_id` now actually provides idempotency
+
+**Problem.** The column existed, the browser generated a fresh UUID for every
+send, and nothing ever read either. There was no unique constraint, so a retried
+or double-submitted request created a second message. The mechanism was in place
+in name only.
+
+**Why this solution.** Insert first and catch the duplicate key, rather than
+checking for an existing row and then inserting. The check-then-insert version has
+a race between the two statements that two concurrent retries will hit; letting
+the database enforce the unique index added in C9 has no such window. On
+collision the original message is looked up and returned, so a retry gets the
+message it already created.
+
+**Choices worth knowing about.**
+
+- `clientId` is now required. An idempotency key a client may omit is not one you
+  can depend on, and the retry path in the UI needs it present.
+- A duplicate returns 200 with the existing message, where a fresh send returns
+  201. The caller can tell the difference without parsing the body.
+- A duplicate is **not** broadcast. Fanning out a retry means every subscriber
+  renders the message twice for what the sender experienced as one send. This was
+  the part most likely to be missed.
+
+**Verification.** Typechecks. The duplicate path needs a live MySQL with the 0002
+migration applied, since it depends on the unique index existing.
+
+---
+
 ## Regression test suite
 
 **Problem.** Fifteen commits of fixes, verified one at a time and mostly by hand.

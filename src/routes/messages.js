@@ -27,16 +27,24 @@ messagesRouter.post('/', wrap(async (req, res) => {
   if (!conversationId || !senderId || !body) {
     return res.status(400).json({ error: 'conversationId, senderId and body are required' });
   }
+  // Required rather than optional: an idempotency key the client may omit is not
+  // one you can rely on, and the retry path in the UI depends on it.
+  if (typeof clientId !== 'string' || clientId.length === 0 || clientId.length > 64) {
+    return res.status(400).json({ error: 'clientId must be a string of 1 to 64 characters' });
+  }
 
   const msg = await createMessage({
     conversationId: Number(conversationId),
     senderId: Number(senderId),
     body: String(body),
-    clientId: clientId ?? null,
+    clientId,
   });
 
-  broadcast(msg.conversationId, { type: 'message', ...msg });
-  res.status(201).json(msg);
+  // A retry must not fan out a second time, or every subscriber renders the
+  // message twice for what the sender experienced as one send.
+  if (!msg.duplicate) broadcast(msg.conversationId, { type: 'message', ...msg });
+
+  res.status(msg.duplicate ? 200 : 201).json(msg);
 }));
 
 messagesRouter.get('/', wrap(async (req, res) => {

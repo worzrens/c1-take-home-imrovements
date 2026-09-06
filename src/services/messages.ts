@@ -5,17 +5,47 @@ export interface NewMessage {
   conversationId: number;
   senderId: number;
   body: string;
-  clientId: string | null;
+  /** Caller-supplied idempotency key. Required, so a retry is always safe. */
+  clientId: string;
+}
+
+/**
+ * Looks up the message a duplicate key collided with, so a retry gets back the
+ * message it already created rather than an error.
+ */
+async function findByClientId(conversationId: number, clientId: string) {
+  const [rows] = await pool.query(
+    `SELECT id, conversation_id AS conversationId, sender_id AS senderId, created_at AS createdAt
+     FROM messages WHERE conversation_id = ? AND client_id = ?`,
+    [conversationId, clientId],
+  );
+  const row = (rows as { id: number }[])[0];
+  if (!row) return null;
+
+  const doc = await mongo().collection('message_bodies').findOne({ _id: row.id as never });
+  return { ...row, body: (doc?.body as string | undefined) ?? null };
 }
 
 export async function createMessage(input: NewMessage) {
   const { conversationId, senderId, body, clientId } = input;
 
-  const [res] = await pool.execute(
-    'INSERT INTO messages (conversation_id, sender_id, client_id) VALUES (?, ?, ?)',
-    [conversationId, senderId, clientId],
-  );
-  const id = (res as { insertId: number }).insertId;
+  let id: number;
+  try {
+    const [res] = await pool.execute(
+      'INSERT INTO messages (conversation_id, sender_id, client_id) VALUES (?, ?, ?)',
+      [conversationId, senderId, clientId],
+    );
+    id = (res as { insertId: number }).insertId;
+  } catch (err) {
+    // The unique index on (conversation_id, client_id) added in C9 is what makes
+    // this reachable. Letting the database detect the collision avoids the
+    // check-then-insert race that a SELECT first would introduce.
+    if ((err as { code?: string }).code === 'ER_DUP_ENTRY') {
+      const existing = await findByClientId(conversationId, clientId);
+      if (existing) return { ...existing, duplicate: true };
+    }
+    throw err;
+  }
 
   // Read the timestamp back rather than generating one in Node. The row already
   // has a value from the column default, and a second clock produces a different
@@ -53,5 +83,5 @@ export async function createMessage(input: NewMessage) {
     throw err;
   }
 
-  return { id, conversationId, senderId, body, createdAt };
+  return { id, conversationId, senderId, body, createdAt, duplicate: false };
 }
