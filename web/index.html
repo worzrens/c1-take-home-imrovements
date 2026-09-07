@@ -7,21 +7,36 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <div id="login">
+    <form id="loginForm">
+      <h2>Relay</h2>
+      <input id="loginEmail" type="email" autocomplete="username" placeholder="Email" required />
+      <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Password" required />
+      <button>Sign in</button>
+      <p id="loginError" hidden></p>
+      <p class="hint">Demo: alice@example.com / relay-demo-password</p>
+    </form>
+  </div>
+  <div id="app" hidden>
   <div id="sidebar">
     <header>
       <h2>Conversations</h2>
       <button id="newConv">+ New</button>
     </header>
+    <div id="whoami"></div>
     <form id="searchForm"><input id="search" autocomplete="off" placeholder="Search messages…" /></form>
     <ul id="conversations"></ul>
   </div>
   <div id="main">
     <h3 id="title">Pick a conversation</h3>
     <div id="messages"></div>
+    <div id="typing"></div>
+    <div id="sendError" hidden></div>
     <form id="composer">
       <input id="text" autocomplete="off" placeholder="Message…" />
       <button>Send</button>
     </form>
+  </div>
   </div>
   <script src="/app.js"></script>
 </body>

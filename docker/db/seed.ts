@@ -1,5 +1,6 @@
 import { pool, waitForMysql } from '../../src/db/mysql.ts';
 import { connectMongo, mongo } from '../../src/db/mongo.ts';
+import { hashPassword } from '../../src/auth/passwords.ts';
 
 // The demo rows used to sit in docker/db/mysql.sql, which the MySQL image runs
 // only when the data directory is empty. That made them unrepeatable, and it
@@ -9,12 +10,22 @@ import { connectMongo, mongo } from '../../src/db/mongo.ts';
 // INSERT IGNORE keeps a rerun a no-op, so this is safe on an existing database.
 await waitForMysql();
 
+// Demo credentials. Every account uses the same password, which is fine for a
+// throwaway local dataset and would not be anywhere else.
+const DEMO_PASSWORD = 'relay-demo-password';
+const hash = await hashPassword(DEMO_PASSWORD);
+
 await pool.query(
-  `INSERT IGNORE INTO users (id, name, email) VALUES
-     (1, 'Alice', 'alice@example.com'),
-     (2, 'Bob', 'bob@example.com'),
-     (3, 'Carol', 'carol@example.com')`,
+  `INSERT IGNORE INTO users (id, name, email, password_hash) VALUES
+     (1, 'Alice', 'alice@example.com', ?),
+     (2, 'Bob', 'bob@example.com', ?),
+     (3, 'Carol', 'carol@example.com', ?)`,
+  [hash, hash, hash],
 );
+
+// Backfills accounts created before the credentials column existed, so an
+// already-seeded database can still log in after upgrading.
+await pool.query('UPDATE users SET password_hash = ? WHERE password_hash IS NULL', [hash]);
 
 await pool.query(
   `INSERT IGNORE INTO conversations (id, title) VALUES
@@ -57,4 +68,5 @@ for (const doc of demo) {
 }
 
 console.log('seeded demo users, conversations and messages');
+console.log(`demo login: alice@example.com / ${DEMO_PASSWORD}`);
 process.exit(0);

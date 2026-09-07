@@ -16,3 +16,63 @@ body { font: 15px/1.4 system-ui, sans-serif; margin: 0; display: flex; height: 1
 #text { flex: 1; padding: 8px; }
 #searchForm { padding: 0 12px 12px; }
 #search { width: 100%; box-sizing: border-box; padding: 6px 8px; }
+
+/* Login */
+#login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+}
+#loginForm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 260px;
+}
+#loginForm input,
+#loginForm button {
+  padding: 8px;
+  font: inherit;
+}
+#loginError {
+  color: #c00;
+  margin: 0;
+  font-size: 13px;
+}
+#loginForm .hint {
+  color: #888;
+  font-size: 12px;
+  margin: 4px 0 0;
+}
+#app {
+  display: flex;
+  height: 100vh;
+}
+
+/* Identity, typing and send errors */
+#whoami {
+  font-size: 12px;
+  color: #666;
+  padding: 0 8px 8px;
+}
+#logout {
+  background: none;
+  border: none;
+  color: #06c;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
+#typing {
+  min-height: 18px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: #888;
+  font-style: italic;
+}
+#sendError {
+  padding: 4px 8px;
+  font-size: 13px;
+  color: #c00;
+}

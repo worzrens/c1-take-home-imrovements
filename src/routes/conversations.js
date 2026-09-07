@@ -26,8 +26,10 @@ export function buildConversationList(conversations, stats, lastMessages) {
 }
 
 conversationsRouter.get('/', wrap(async (req, res) => {
-  const userId = Number(req.query.userId);
-  if (!userId) return res.status(400).json({ error: 'userId is required' });
+  // Identity is the token's subject. `?userId=` used to be the whole auth story
+  // and is gone from the surface rather than deprecated, so there is no fallback
+  // left to exploit.
+  const userId = req.userId;
 
   const [conversations] = await pool.query(
     `SELECT c.id, c.title
@@ -77,14 +79,30 @@ conversationsRouter.post('/', wrap(async (req, res) => {
     return res.status(400).json({ error: 'title must be a string of at most 200 characters' });
   }
 
-  const [created] = await pool.execute('INSERT INTO conversations (title) VALUES (?)', [title]);
-  const id = created.insertId;
-  for (const uid of participantIds) {
-    await pool.execute(
-      'INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)',
-      [id, Number(uid)],
-    );
-  }
+  // The creator is always a participant, whatever the client sent. Otherwise it
+  // is possible to create a conversation you cannot then read.
+  const participants = [...new Set([req.userId, ...participantIds.map(Number)])];
 
-  res.status(201).json({ id, title, participantIds: participantIds.map(Number) });
+  // One transaction: a conversation with no participants is unreachable for
+  // everyone, and that is exactly what a failure halfway through the loop used
+  // to leave behind.
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [created] = await conn.execute('INSERT INTO conversations (title) VALUES (?)', [title]);
+    const id = created.insertId;
+    for (const uid of participants) {
+      await conn.execute(
+        'INSERT INTO conversation_participants (conversation_id, user_id) VALUES (?, ?)',
+        [id, uid],
+      );
+    }
+    await conn.commit();
+    res.status(201).json({ id, title, participantIds: participants });
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
 }));

@@ -4,6 +4,7 @@ import { pool } from '../db/mysql.ts';
 import { mongo } from '../db/mongo.ts';
 import { broadcast } from '../ws/hub.ts';
 import { wrap } from '../http/errors.ts';
+import { isParticipant } from '../auth/authorize.ts';
 
 export const messagesRouter = express.Router();
 
@@ -23,14 +24,23 @@ export function shapePage(newestFirst, limit) {
 }
 
 messagesRouter.post('/', wrap(async (req, res) => {
-  const { conversationId, senderId, body, clientId } = req.body || {};
-  if (!conversationId || !senderId || !body) {
-    return res.status(400).json({ error: 'conversationId, senderId and body are required' });
+  // senderId used to come from the request body, so anyone could post as anyone.
+  // It is the token subject now and the field is gone from the API.
+  const senderId = req.userId;
+  const { conversationId, body, clientId } = req.body || {};
+  if (!conversationId || !body) {
+    return res.status(400).json({ error: 'conversationId and body are required' });
   }
   // Required rather than optional: an idempotency key the client may omit is not
   // one you can rely on, and the retry path in the UI depends on it.
   if (typeof clientId !== 'string' || clientId.length === 0 || clientId.length > 64) {
     return res.status(400).json({ error: 'clientId must be a string of 1 to 64 characters' });
+  }
+
+  // 403 rather than 404, with nothing in the body about whether the conversation
+  // exists, so this cannot be used to enumerate ids.
+  if (!(await isParticipant(Number(conversationId), senderId))) {
+    return res.status(403).json({ error: 'not a participant in this conversation' });
   }
 
   const msg = await createMessage({
@@ -50,6 +60,10 @@ messagesRouter.post('/', wrap(async (req, res) => {
 messagesRouter.get('/', wrap(async (req, res) => {
   const conversationId = Number(req.query.conversationId);
   if (!conversationId) return res.status(400).json({ error: 'conversationId is required' });
+
+  if (!(await isParticipant(conversationId, req.userId))) {
+    return res.status(403).json({ error: 'not a participant in this conversation' });
+  }
 
   const requested = req.query.limit === undefined ? DEFAULT_PAGE_SIZE : Number(req.query.limit);
   if (!Number.isInteger(requested) || requested < 1) {

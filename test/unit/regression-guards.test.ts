@@ -88,4 +88,68 @@ describe('regression guards (static)', () => {
     assert.match(svc, /DELETE FROM messages WHERE id = \?/);
     assert.match(svc, /orphaned message row/);
   });
+
+  it('C1/SEC-1: caller-supplied identity is gone from every route', async () => {
+    for (const file of [
+      'src/routes/messages.js',
+      'src/routes/conversations.js',
+      'src/routes/search.ts',
+    ]) {
+      const code = stripComments(await read(file));
+      assert.ok(!/req\.query\.userId/.test(code), `${file} reads userId from the query string`);
+      assert.ok(!/req\.body\.senderId/.test(code), `${file} reads senderId from the body`);
+      assert.ok(
+        !/const\s*\{[^}]*\bsenderId\b[^}]*\}\s*=\s*req\.body/.test(code),
+        `${file} destructures senderId out of the request body`,
+      );
+    }
+  });
+
+  it('C1: JWT verification pins the algorithm and the secret has no fallback', async () => {
+    const tokens = await read('src/auth/tokens.ts');
+    assert.match(tokens, /algorithms:\s*\['HS256'\]/, 'alg:none and confusion attacks');
+    assert.match(tokens, /issuer:\s*ISSUER/);
+    assert.match(tokens, /audience:\s*AUDIENCE/);
+
+    const cfg = stripComments(await read('src/config.ts'));
+    assert.match(cfg, /jwtSecret:\s*process\.env\.JWT_SECRET \|\| ''/, 'no literal fallback');
+  });
+
+  it('C1: the token is an httpOnly cookie, never readable by script', async () => {
+    const cookies = await read('src/auth/cookies.ts');
+    assert.match(cookies, /httpOnly:\s*true/);
+    assert.match(cookies, /secure:\s*true/);
+    assert.match(cookies, /sameSite:\s*'lax'/);
+
+    const client = stripComments(await read('web/app.js'));
+    assert.ok(!/localStorage|sessionStorage/.test(client), 'no token in web storage');
+  });
+
+  it('C7: the WebSocket upgrade is authenticated before the handshake', async () => {
+    const hub = await read('src/ws/hub.ts');
+    assert.match(hub, /noServer:\s*true/, 'reject before handshake, not after');
+    assert.match(hub, /verifyAccessToken/);
+    assert.match(hub, /401 Unauthorized/);
+    assert.match(hub, /participantConversationIds/, 'subscriptions are server-authorized');
+  });
+
+  it('multi-instance: the fan-out goes through Redis, not a local set', async () => {
+    const hub = await read('src/ws/hub.ts');
+    assert.match(hub, /\.publish\(CHANNEL/);
+    assert.match(hub, /subscriber\(\)\.subscribe\(CHANNEL/);
+  });
+
+  it('rate limiting: the window lives in Redis, not in process memory', async () => {
+    const rl = stripComments(await read('src/http/rateLimit.ts'));
+    assert.match(rl, /zRemRangeByScore|zAdd/, 'sorted-set sliding window');
+    assert.ok(!/new Map\(|new Set\(/.test(rl), 'no in-process counter');
+    assert.match(rl, /Retry-After/);
+    assert.match(rl, /429/);
+  });
+
+  it('N18/N20: no cwd-relative static path or hardcoded ws scheme in the client', async () => {
+    const client = stripComments(await read('web/app.js'));
+    assert.ok(!/`ws:\/\//.test(client), 'scheme is derived from location.protocol');
+    assert.match(client, /location\.protocol === 'https:' \? 'wss' : 'ws'/);
+  });
 });

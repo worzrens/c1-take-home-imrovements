@@ -86,6 +86,20 @@ describe('C9 + N6: live schema after migrations', { skip: up ? false : SKIP_DB }
     );
   });
 
+  it('C1: users carries a password_hash column', async () => {
+    const [rows] = await conn.query(
+      `SELECT DATA_TYPE AS type, IS_NULLABLE AS nullable
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'password_hash'`,
+    );
+    const col = (rows as { type: string; nullable: string }[])[0];
+    assert.ok(col, 'password_hash exists');
+    assert.equal(col.type, 'varchar');
+    // Nullable, so an account that predates credentials means "cannot log in"
+    // rather than "shares a fake hash with every other legacy row".
+    assert.equal(col.nullable, 'YES');
+  });
+
   it('N6: messages.created_at and conversations.created_at are DATETIME(3)', async () => {
     const [rows] = await conn.query(
       `SELECT TABLE_NAME AS t, DATA_TYPE AS type, DATETIME_PRECISION AS prec
@@ -107,6 +121,7 @@ describe('C9 + N6: live schema after migrations', { skip: up ? false : SKIP_DB }
       '0001_initial',
       '0002_indexes_and_keys',
       '0003_millisecond_timestamps',
+      '0004_user_credentials',
     ]);
   });
 });

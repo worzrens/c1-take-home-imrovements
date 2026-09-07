@@ -22,6 +22,8 @@ services:
     depends_on:
       seed:
         condition: service_completed_successfully
+      redis:
+        condition: service_started
     volumes:
       - ./:/app
       - /app/node_modules
