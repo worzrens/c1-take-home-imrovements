@@ -1,5 +1,5 @@
 import { pool, waitForMysql } from '../../src/db/mysql.ts';
-import { connectMongo, mongo } from '../../src/db/mongo.ts';
+import { connectMongo, ensureMongoIndexes, mongo } from '../../src/db/mongo.ts';
 import { hashPassword } from '../../src/auth/passwords.ts';
 
 // The demo rows used to sit in docker/db/mysql.sql, which the MySQL image runs
@@ -46,6 +46,7 @@ await pool.query(
 );
 
 await connectMongo();
+await ensureMongoIndexes();
 const bodies = mongo().collection('message_bodies');
 
 // This used to be deleteMany({}) followed by insertMany. Because the MySQL side

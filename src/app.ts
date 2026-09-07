@@ -2,6 +2,7 @@ import express from 'express';
 import helmet from 'helmet';
 import { conversationsRouter } from './routes/conversations.js';
 import { messagesRouter } from './routes/messages.js';
+import { searchRouter } from './routes/search.ts';
 import { authRouter } from './routes/auth.ts';
 import { errorHandler } from './http/errors.ts';
 import { authenticate, requireSameOrigin } from './auth/middleware.ts';
@@ -57,6 +58,7 @@ export function createApp() {
   app.use('/api/auth', authRouter);
   app.use('/api/conversations', authenticate, conversationsRouter);
   app.use('/api/messages', authenticate, messagesRouter);
+  app.use('/api/search', authenticate, searchRouter);
 
   // Must be last: Express only treats a four-argument handler as error
   // middleware if every route is already mounted above it.

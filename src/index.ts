@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { config } from './config.ts';
 import { waitForMysql } from './db/mysql.ts';
-import { connectMongo } from './db/mongo.ts';
+import { connectMongo, ensureMongoIndexes } from './db/mongo.ts';
 import { connectRedis } from './db/redis.ts';
 import { jwtSecret } from './auth/tokens.ts';
 import { createApp } from './app.ts';
@@ -16,6 +16,7 @@ jwtSecret();
 
 await waitForMysql();
 await connectMongo();
+await ensureMongoIndexes();
 await connectRedis();
 
 const app = createApp();
