@@ -79,7 +79,7 @@ services:
 
   redis:
     image: redis:7
-    expose: ["6379"]
+    ports: ["6379:6379"]
 
 # Both stores keep their data across `docker compose down`. They used to have no
 # volumes at all, so their lifecycles could drift apart, which is what let MySQL

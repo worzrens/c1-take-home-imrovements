@@ -10,15 +10,17 @@
     "migrate:down": "tsx src/db/migrate.ts down",
     "seed": "tsx docker/db/seed.ts",
     "reconcile": "tsx src/db/reconcile.ts",
-    "test": "node --import tsx --test --test-isolation=none --test-force-exit test/unit/*.test.ts test/http/*.test.ts test/db/*.test.ts",
-    "pretest:db": "docker compose up -d --wait mysql mongo && docker compose run --rm migrate && docker compose run --rm seed",
-    "test:db": "MYSQL_URL=mysql://root:root@127.0.0.1:3306/relay?charset=utf8mb4 MONGO_URL=mongodb://127.0.0.1:27017/relay npm test"
+    "test": "JWT_SECRET=test-secret-that-is-at-least-32-characters-long node --import tsx --test --test-isolation=none --test-force-exit test/unit/*.test.ts test/http/*.test.ts test/db/*.test.ts",
+    "pretest:db": "docker compose up -d --wait mysql mongo redis && docker compose run --rm migrate && docker compose run --rm seed",
+    "test:db": "MYSQL_URL=mysql://root:root@127.0.0.1:3306/relay?charset=utf8mb4 MONGO_URL=mongodb://127.0.0.1:27017/relay REDIS_URL=redis://127.0.0.1:6379 npm test"
   },
   "dependencies": {
     "express": "^4.19.2",
     "helmet": "^8.3.0",
+    "jose": "^6.2.12",
     "mongodb": "^6.8.0",
     "mysql2": "^3.11.3",
+    "redis": "^6.2.1",
     "tsx": "^4.19.1",
     "umzug": "^3.8.2",
     "ws": "^8.18.0"
