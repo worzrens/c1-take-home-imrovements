@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import helmet from 'helmet';
 import { conversationsRouter } from './routes/conversations.js';
@@ -14,6 +16,8 @@ import { limitMessageSends } from './http/rateLimit.ts';
  * and starts listening; the tests import this directly and run it on an
  * ephemeral port.
  */
+const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../web');
+
 export function createApp() {
   const app = express();
 
@@ -52,7 +56,9 @@ export function createApp() {
   // state-changing request gets its Origin checked.
   app.use(requireSameOrigin);
 
-  app.use(express.static('web'));
+  // Resolved from this file, not from the working directory. A relative 'web'
+  // only works when the process happens to be started from the repo root.
+  app.use(express.static(webRoot));
 
   // Login and refresh cannot require a valid access token; the rest of the API
   // is closed by default.

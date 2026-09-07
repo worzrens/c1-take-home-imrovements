@@ -151,5 +151,15 @@ describe('regression guards (static)', () => {
     const client = stripComments(await read('web/app.js'));
     assert.ok(!/`ws:\/\//.test(client), 'scheme is derived from location.protocol');
     assert.match(client, /location\.protocol === 'https:' \? 'wss' : 'ws'/);
+
+    // N18 regressed once already: the fix lived in index.ts and was dropped when
+    // createApp() moved to app.ts. A bare relative path only resolves when the
+    // process happens to start in the repo root.
+    const app = stripComments(await read('src/app.ts'));
+    assert.ok(
+      !/express\.static\(\s*['"`]/.test(app),
+      'static root is resolved, not a bare relative path',
+    );
+    assert.match(app, /fileURLToPath\(import\.meta\.url\)/);
   });
 });
