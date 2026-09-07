@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "docker/db"]
+  "include": ["src", "docker/db", "test"]
 }

@@ -13,13 +13,34 @@ services:
     command: npm start
     restart: on-failure
     env_file: .env
+    # Without this Express runs its development error handler, which serialises
+    # the full stack trace into the response body. Malformed JSON was enough to
+    # get filesystem paths and dependency internals back from the API.
+    environment:
+      NODE_ENV: production
     expose: ["3000"]
     depends_on:
       seed:
         condition: service_completed_successfully
+      redis:
+        condition: service_started
     volumes:
       - ./:/app
       - /app/node_modules
+
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    command: npm run migrate
+    restart: "no"
+    env_file: .env
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    depends_on:
+      mysql:
+        condition: service_healthy
 
   seed:
     build:
@@ -32,8 +53,8 @@ services:
       - ./:/app
       - /app/node_modules
     depends_on:
-      mysql:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       mongo:
         condition: service_started
 
@@ -44,7 +65,7 @@ services:
       MYSQL_DATABASE: relay
     ports: ["3306:3306"]
     volumes:
-      - ./docker/db/mysql.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - mysql-data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
       interval: 5s
@@ -55,7 +76,16 @@ services:
   mongo:
     image: mongo:7
     ports: ["27017:27017"]
+    volumes:
+      - mongo-data:/data/db
 
   redis:
     image: redis:7
-    expose: ["6379"]
+    ports: ["6379:6379"]
+
+# Both stores keep their data across `docker compose down`. They used to have no
+# volumes at all, so their lifecycles could drift apart, which is what let MySQL
+# keep message rows whose bodies had gone.
+volumes:
+  mysql-data:
+  mongo-data:

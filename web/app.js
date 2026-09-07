@@ -1,45 +1,219 @@
-const userId = 1;
+let me = null;
 let ws;
 let activeConversation;
 let conversations = [];
 
+// Cursor into the history of the open conversation. `olderCursor` is the id of
+// the oldest message on screen; anything older is fetched on demand.
+let olderCursor = null;
+let hasOlder = false;
+let loadingOlder = false;
+
+// userId => timeout handle. An entry means "still typing"; the timeout clears it
+// if no further frame arrives, since there is no "stopped typing" event.
+const typists = new Map();
+const TYPING_EXPIRY_MS = 4000;
+let lastTypingSent = 0;
+
+const $ = (id) => document.getElementById(id);
+
+/* -------------------------------------------------------------------------- */
+/* Session                                                                     */
+/* -------------------------------------------------------------------------- */
+
+// The token is in an httpOnly cookie, so script cannot read it and there is
+// nothing to attach by hand. `credentials: 'same-origin'` is the default, but
+// being explicit makes the dependency obvious.
+const api = (path, init) => fetch(path, { credentials: 'same-origin', ...init });
+
+const json = (payload) => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload),
+});
+
+async function start() {
+  const res = await api('/api/auth/me');
+  if (res.ok) {
+    me = await res.json();
+    showApp();
+  } else {
+    showLogin();
+  }
+}
+
+function showLogin() {
+  $('login').hidden = false;
+  $('app').hidden = true;
+}
+
+async function showApp() {
+  $('login').hidden = true;
+  $('app').hidden = false;
+
+  const who = $('whoami');
+  who.textContent = `${me.name} · `;
+  const out = document.createElement('button');
+  out.id = 'logout';
+  out.textContent = 'Sign out';
+  out.onclick = logout;
+  who.appendChild(out);
+
+  await loadConversations();
+}
+
+$('loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const err = $('loginError');
+  err.hidden = true;
+
+  const res = await api(
+    '/api/auth/login',
+    json({ email: $('loginEmail').value, password: $('loginPassword').value }),
+  );
+  if (!res.ok) {
+    err.textContent = 'Invalid email or password.';
+    err.hidden = false;
+    return;
+  }
+  me = await res.json();
+  $('loginPassword').value = '';
+  await showApp();
+};
+
+async function logout() {
+  await api('/api/auth/logout', { method: 'POST' });
+  if (ws) ws.close();
+  me = null;
+  conversations = [];
+  activeConversation = null;
+  $('conversations').innerHTML = '';
+  $('messages').innerHTML = '';
+  showLogin();
+}
+
+/* -------------------------------------------------------------------------- */
+/* Conversations                                                               */
+/* -------------------------------------------------------------------------- */
+
 async function loadConversations() {
-  const res = await fetch(`/api/conversations?userId=${userId}`);
+  const res = await api('/api/conversations');
+  if (res.status === 401) return showLogin();
   conversations = await res.json();
   renderSidebar();
   connectWs();
 }
 
 function renderSidebar() {
-  const list = document.getElementById('conversations');
+  const list = $('conversations');
   list.innerHTML = '';
   for (const c of conversations) {
     const li = document.createElement('li');
     if (c.id === activeConversation) li.className = 'active';
-    li.innerHTML =
-      `<span>${c.title} (${c.messageCount})</span>` + (c.unread ? '<span class="dot">●</span>' : '');
+
+    // Built as nodes, not innerHTML. The title is attacker-controlled: anyone
+    // could create a conversation whose title was markup and it executed in the
+    // browser of every participant when their sidebar rendered.
+    const label = document.createElement('span');
+    label.textContent = `${c.title} (${c.messageCount})`;
+    li.appendChild(label);
+
+    if (c.unread) {
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.textContent = '●';
+      li.appendChild(dot);
+    }
+
     li.onclick = () => openConversation(c.id, c.title);
     list.appendChild(li);
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* Real-time                                                                   */
+/* -------------------------------------------------------------------------- */
+
 function connectWs() {
   if (ws) ws.close();
-  ws = new WebSocket(`ws://${location.host}/`);
-  ws.onopen = () =>
-    ws.send(JSON.stringify({ type: 'subscribe', conversationIds: conversations.map((c) => c.id) }));
+  // wss: when the page is served over TLS. Hardcoding ws: broke the socket on
+  // any HTTPS deployment, and mixed-content rules block it silently.
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${scheme}://${location.host}/`);
+
+  ws.onopen = () => subscribe();
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
-    if (msg.type !== 'message') return;
-    const c = conversations.find((x) => x.id === msg.conversationId);
-    if (c) c.messageCount += 1;
-    if (msg.conversationId === activeConversation) {
-      appendMessage(msg);
-    } else if (c) {
-      c.unread = true;
-    }
-    renderSidebar();
+    if (msg.type === 'message') onMessage(msg);
+    else if (msg.type === 'typing') onTyping(msg);
   };
+}
+
+// Sent on open and again whenever the known set changes, so a conversation
+// created after connect starts receiving live traffic without a reload.
+function subscribe() {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'subscribe', conversationIds: conversations.map((c) => c.id) }));
+  }
+}
+
+function onMessage(msg) {
+  const c = conversations.find((x) => x.id === msg.conversationId);
+  if (c) c.messageCount += 1;
+  if (msg.conversationId === activeConversation) {
+    clearTypist(msg.senderId);
+    appendMessage(msg);
+  } else if (c) {
+    c.unread = true;
+  }
+  renderSidebar();
+}
+
+function onTyping(msg) {
+  if (msg.conversationId !== activeConversation) return;
+  if (me && msg.userId === me.id) return; // don't announce yourself
+
+  clearTimeout(typists.get(msg.userId)?.timer);
+  typists.set(msg.userId, {
+    name: msg.name,
+    timer: setTimeout(() => {
+      typists.delete(msg.userId);
+      renderTyping();
+    }, TYPING_EXPIRY_MS),
+  });
+  renderTyping();
+}
+
+function clearTypist(userId) {
+  const entry = typists.get(userId);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  typists.delete(userId);
+  renderTyping();
+}
+
+function renderTyping() {
+  const names = [...typists.values()].map((t) => t.name);
+  const el = $('typing');
+  if (names.length === 0) el.textContent = '';
+  else if (names.length === 1) el.textContent = `${names[0]} is typing…`;
+  else if (names.length === 2) el.textContent = `${names[0]} and ${names[1]} are typing…`;
+  else el.textContent = 'Several people are typing…';
+}
+
+/* -------------------------------------------------------------------------- */
+/* Messages                                                                    */
+/* -------------------------------------------------------------------------- */
+
+async function loadPage(conversationId, before) {
+  const params = new URLSearchParams({ conversationId });
+  if (before) params.set('before', before);
+  const res = await api(`/api/messages?${params}`);
+  if (!res.ok) return [];
+  const page = await res.json();
+  hasOlder = page.hasMore;
+  olderCursor = page.nextBefore;
+  return page.messages;
 }
 
 async function openConversation(id, title) {
@@ -48,64 +222,130 @@ async function openConversation(id, title) {
   if (c) c.unread = false;
   renderSidebar();
 
-  document.getElementById('title').textContent = title;
-  const res = await fetch(`/api/messages?conversationId=${id}`);
-  const messages = await res.json();
-  const pane = document.getElementById('messages');
+  for (const entry of typists.values()) clearTimeout(entry.timer);
+  typists.clear();
+  renderTyping();
+
+  $('title').textContent = title;
+  const pane = $('messages');
   pane.innerHTML = '';
-  for (const m of messages) appendMessage(m);
+  olderCursor = null;
+  hasOlder = false;
+
+  // Only the newest page. The history used to load in full, however long it was.
+  for (const m of await loadPage(id, null)) appendMessage(m);
+}
+
+$('messages').addEventListener('scroll', async (e) => {
+  const pane = e.target;
+  if (pane.scrollTop > 0 || !hasOlder || loadingOlder || !activeConversation) return;
+
+  loadingOlder = true;
+  try {
+    const heightBefore = pane.scrollHeight;
+    const older = await loadPage(activeConversation, olderCursor);
+    const batch = document.createDocumentFragment();
+    for (const m of older) batch.appendChild(messageNode(m));
+    pane.insertBefore(batch, pane.firstChild);
+    // Keep the reader looking at the same message rather than jumping to the top.
+    pane.scrollTop = pane.scrollHeight - heightBefore;
+  } finally {
+    loadingOlder = false;
+  }
+});
+
+function messageNode(m) {
+  const div = document.createElement('div');
+  div.className = 'msg';
+  if (m.body === null) {
+    // The row exists but its body does not. Say so rather than showing a blank
+    // line that reads as an empty message.
+    div.textContent = `#${m.senderId}: (message unavailable)`;
+    div.style.color = '#999';
+  } else {
+    div.textContent = `#${m.senderId}: ${m.body}`;
+  }
+  return div;
 }
 
 function appendMessage(m) {
-  const pane = document.getElementById('messages');
-  const div = document.createElement('div');
-  div.className = 'msg';
-  div.textContent = `#${m.senderId}: ${m.body}`;
-  pane.appendChild(div);
+  const pane = $('messages');
+  pane.appendChild(messageNode(m));
   pane.scrollTop = pane.scrollHeight;
 }
 
-document.getElementById('composer').onsubmit = async (e) => {
+// Throttled on the client too, so a fast typist does not send a frame per
+// keystroke. The server throttles independently; this just saves the traffic.
+$('text').addEventListener('input', () => {
+  if (!activeConversation || ws?.readyState !== WebSocket.OPEN) return;
+  const now = Date.now();
+  if (now - lastTypingSent < 2000) return;
+  lastTypingSent = now;
+  ws.send(JSON.stringify({ type: 'typing', conversationId: activeConversation }));
+});
+
+$('composer').onsubmit = async (e) => {
   e.preventDefault();
-  const input = document.getElementById('text');
+  const input = $('text');
   const body = input.value.trim();
   if (!body || !activeConversation) return;
-  input.value = '';
-  await fetch('/api/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      conversationId: activeConversation,
-      senderId: userId,
-      body,
-      clientId: crypto.randomUUID(),
-    }),
-  });
+
+  const err = $('sendError');
+  err.hidden = true;
+
+  // The input is not cleared until the server confirms. Clearing optimistically
+  // meant a rejected send silently ate what you typed.
+  try {
+    const res = await api(
+      '/api/messages',
+      json({ conversationId: activeConversation, body, clientId: crypto.randomUUID() }),
+    );
+
+    if (res.status === 429) {
+      const retry = res.headers.get('Retry-After') ?? 'a few';
+      err.textContent = `Sending too fast — try again in ${retry}s.`;
+      err.hidden = false;
+      return;
+    }
+    if (res.status === 401) return showLogin();
+    if (!res.ok) {
+      err.textContent = 'Could not send. Try again.';
+      err.hidden = false;
+      return;
+    }
+    input.value = '';
+    lastTypingSent = 0;
+  } catch {
+    err.textContent = 'Network error. Try again.';
+    err.hidden = false;
+  }
 };
 
-document.getElementById('newConv').onclick = async () => {
+$('newConv').onclick = async () => {
   const title = prompt('Conversation title?');
   if (!title) return;
-  await fetch('/api/conversations', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, participantIds: [userId, 2] }),
-  });
+  await api('/api/conversations', json({ title, participantIds: [2] }));
   await loadConversations();
+  subscribe();
 };
 
-document.getElementById('searchForm').onsubmit = async (e) => {
+/* -------------------------------------------------------------------------- */
+/* Search                                                                      */
+/* -------------------------------------------------------------------------- */
+
+$('searchForm').onsubmit = async (e) => {
   e.preventDefault();
-  const q = document.getElementById('search').value.trim();
+  const q = $('search').value.trim();
   if (!q) return;
-  const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+  const res = await api(`/api/search?q=${encodeURIComponent(q)}`);
+  if (!res.ok) return;
   renderResults(q, await res.json());
 };
 
 function renderResults(q, results) {
   activeConversation = null;
-  document.getElementById('title').textContent = `Search: "${q}"`;
-  const pane = document.getElementById('messages');
+  $('title').textContent = `Search: "${q}"`;
+  const pane = $('messages');
   pane.innerHTML = '';
   if (!results.length) {
     const empty = document.createElement('div');
@@ -127,4 +367,4 @@ function renderResults(q, results) {
   }
 }
 
-loadConversations();
+start();
