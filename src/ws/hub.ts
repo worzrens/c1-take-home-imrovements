@@ -3,11 +3,14 @@ import type { Server } from 'node:http';
 import { parseCookieHeader, ACCESS_COOKIE } from '../auth/cookies.ts';
 import { verifyAccessToken } from '../auth/tokens.ts';
 import { participantConversationIds } from '../auth/authorize.ts';
+import { pool } from '../db/mysql.ts';
 import { redis, subscriber } from '../db/redis.ts';
 
 type Client = WebSocket & {
   userId?: number;
+  userName?: string;
   subs?: Set<number>;
+  lastTypingAt?: Map<number, number>;
 };
 
 const clients = new Set<Client>();
@@ -20,6 +23,9 @@ const clients = new Set<Client>();
  * who happened to be connected to the instance that handled the POST.
  */
 const CHANNEL = 'relay:events';
+
+/** Typing is far chattier than messages, so it gets its own floor, per socket. */
+const TYPING_THROTTLE_MS = 2000;
 
 let redisReady = false;
 // One subscription per process. Subscribing again on every attachWs would stack
@@ -88,6 +94,7 @@ export async function attachWs(server: Server): Promise<WebSocketServer> {
 
   wss.on('connection', (ws: Client) => {
     ws.subs = new Set();
+    ws.lastTypingAt = new Map();
     clients.add(ws);
 
     // Sockets that error never emit 'close', so without this they leaked into
@@ -99,13 +106,14 @@ export async function attachWs(server: Server): Promise<WebSocketServer> {
     });
 
     ws.on('message', (raw) => {
-      let m: { type?: string; conversationIds?: unknown };
+      let m: { type?: string; conversationIds?: unknown; conversationId?: unknown };
       try {
         m = JSON.parse(raw.toString());
       } catch {
         return; /* ignore malformed frames */
       }
       if (m.type === 'subscribe') void handleSubscribe(ws, m.conversationIds);
+      else if (m.type === 'typing') void handleTyping(ws, m.conversationId);
     });
 
     ws.on('close', () => clients.delete(ws));
@@ -156,6 +164,33 @@ async function handleSubscribe(ws: Client, requested: unknown): Promise<void> {
   } catch (err) {
     console.error('[ws] subscribe failed', err);
   }
+}
+
+async function handleTyping(ws: Client, conversationId: unknown): Promise<void> {
+  const id = Number(conversationId);
+  if (!Number.isInteger(id) || ws.userId === undefined) return;
+  // Already-verified membership: subs is the server's own authorized set.
+  if (!ws.subs?.has(id)) return;
+
+  // Dropped, not rejected. A 429 for a typing frame would be noise the client
+  // can do nothing useful with.
+  const now = Date.now();
+  if (now - (ws.lastTypingAt?.get(id) ?? 0) < TYPING_THROTTLE_MS) return;
+  ws.lastTypingAt?.set(id, now);
+
+  // Looked up once per socket. "Alice is typing" beats "#2 is typing", and the
+  // throttle above means this is at most one query every couple of seconds even
+  // before the cache.
+  if (ws.userName === undefined) {
+    try {
+      const [rows] = await pool.query('SELECT name FROM users WHERE id = ?', [ws.userId]);
+      ws.userName = (rows as { name: string }[])[0]?.name ?? `#${ws.userId}`;
+    } catch {
+      ws.userName = `#${ws.userId}`;
+    }
+  }
+
+  broadcast(id, { type: 'typing', conversationId: id, userId: ws.userId, name: ws.userName });
 }
 
 /* -------------------------------------------------------------------------- */

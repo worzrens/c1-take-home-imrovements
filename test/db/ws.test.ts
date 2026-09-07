@@ -5,11 +5,12 @@ import type { AddressInfo } from 'node:net';
 import type { Connection } from 'mysql2/promise';
 import { WebSocket } from 'ws';
 import { allReachable, mysqlConn, SKIP_REDIS } from '../helpers/db.ts';
-import { appServer, Session, ALICE, CAROL } from '../helpers/auth.ts';
+import { appServer, Session, ALICE, BOB, CAROL } from '../helpers/auth.ts';
 
 /**
- * C3 (error handling), C7 (upgrade authentication and subscription
- * authorization) and tasks/multi-instance.md (the Redis fan-out).
+ * C3 (error handling), C7 (upgrade auth and subscription authorization),
+ * tasks/multi-instance.md (Redis fan-out) and tasks/typing-indicator.md, all of
+ * which live in the same hub.
  */
 const up = await allReachable();
 
@@ -243,5 +244,63 @@ describe('WebSocket hub', { skip: up ? false : SKIP_REDIS }, () => {
     const got = await nextMessage(ws);
     assert.equal(got?.type, 'message');
     assert.equal(got?.body, 'through the route');
+  });
+
+  /* ------------------------------------------------------------- typing --- */
+
+  it('typing: a frame reaches the other participant with a name', async () => {
+    const alice = app.session();
+    const bob = app.session();
+    await alice.login(ALICE);
+    await bob.login(BOB);
+
+    const aliceWs = await connect(alice);
+    const bobWs = await connect(bob);
+    await subscribe(aliceWs, [1]);
+    await subscribe(bobWs, [1]);
+
+    aliceWs.send(JSON.stringify({ type: 'typing', conversationId: 1 }));
+
+    const got = await nextMessage(bobWs);
+    assert.equal(got?.type, 'typing');
+    assert.equal(got?.conversationId, 1);
+    assert.equal(got?.name, 'Alice', 'carries a name so the UI can say who');
+  });
+
+  it('typing: throttled, so a fast typist does not flood the room', async () => {
+    const alice = app.session();
+    const bob = app.session();
+    await alice.login(ALICE);
+    await bob.login(BOB);
+
+    const aliceWs = await connect(alice);
+    const bobWs = await connect(bob);
+    await subscribe(aliceWs, [1]);
+    await subscribe(bobWs, [1]);
+
+    const seen: unknown[] = [];
+    bobWs.on('message', (d) => seen.push(JSON.parse(d.toString())));
+
+    // Ten frames in quick succession, as a keystroke handler would send.
+    for (let i = 0; i < 10; i++) aliceWs.send(JSON.stringify({ type: 'typing', conversationId: 1 }));
+    await new Promise((r) => setTimeout(r, 400));
+
+    assert.equal(seen.length, 1, 'dropped rather than rejected, and only the first got through');
+  });
+
+  it('typing: a frame for a conversation you are not in is dropped', async () => {
+    const carol = app.session();
+    await carol.login(CAROL);
+    const carolWs = await connect(carol);
+    await subscribe(carolWs, [2]);
+
+    const alice = app.session();
+    await alice.login(ALICE);
+    const aliceWs = await connect(alice);
+    await subscribe(aliceWs, [1]);
+
+    // Carol claims to be typing in conversation 1, which she is not in.
+    carolWs.send(JSON.stringify({ type: 'typing', conversationId: 1 }));
+    assert.equal(await nextMessage(aliceWs), null, 'nothing leaked into conversation 1');
   });
 });

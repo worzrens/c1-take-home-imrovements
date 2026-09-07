@@ -9,6 +9,12 @@ let olderCursor = null;
 let hasOlder = false;
 let loadingOlder = false;
 
+// userId => timeout handle. An entry means "still typing"; the timeout clears it
+// if no further frame arrives, since there is no "stopped typing" event.
+const typists = new Map();
+const TYPING_EXPIRY_MS = 4000;
+let lastTypingSent = 0;
+
 const $ = (id) => document.getElementById(id);
 
 /* -------------------------------------------------------------------------- */
@@ -139,6 +145,7 @@ function connectWs() {
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'message') onMessage(msg);
+    else if (msg.type === 'typing') onTyping(msg);
   };
 }
 
@@ -154,11 +161,44 @@ function onMessage(msg) {
   const c = conversations.find((x) => x.id === msg.conversationId);
   if (c) c.messageCount += 1;
   if (msg.conversationId === activeConversation) {
+    clearTypist(msg.senderId);
     appendMessage(msg);
   } else if (c) {
     c.unread = true;
   }
   renderSidebar();
+}
+
+function onTyping(msg) {
+  if (msg.conversationId !== activeConversation) return;
+  if (me && msg.userId === me.id) return; // don't announce yourself
+
+  clearTimeout(typists.get(msg.userId)?.timer);
+  typists.set(msg.userId, {
+    name: msg.name,
+    timer: setTimeout(() => {
+      typists.delete(msg.userId);
+      renderTyping();
+    }, TYPING_EXPIRY_MS),
+  });
+  renderTyping();
+}
+
+function clearTypist(userId) {
+  const entry = typists.get(userId);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  typists.delete(userId);
+  renderTyping();
+}
+
+function renderTyping() {
+  const names = [...typists.values()].map((t) => t.name);
+  const el = $('typing');
+  if (names.length === 0) el.textContent = '';
+  else if (names.length === 1) el.textContent = `${names[0]} is typing…`;
+  else if (names.length === 2) el.textContent = `${names[0]} and ${names[1]} are typing…`;
+  else el.textContent = 'Several people are typing…';
 }
 
 /* -------------------------------------------------------------------------- */
@@ -181,6 +221,10 @@ async function openConversation(id, title) {
   const c = conversations.find((x) => x.id === id);
   if (c) c.unread = false;
   renderSidebar();
+
+  for (const entry of typists.values()) clearTimeout(entry.timer);
+  typists.clear();
+  renderTyping();
 
   $('title').textContent = title;
   const pane = $('messages');
@@ -230,6 +274,16 @@ function appendMessage(m) {
   pane.scrollTop = pane.scrollHeight;
 }
 
+// Throttled on the client too, so a fast typist does not send a frame per
+// keystroke. The server throttles independently; this just saves the traffic.
+$('text').addEventListener('input', () => {
+  if (!activeConversation || ws?.readyState !== WebSocket.OPEN) return;
+  const now = Date.now();
+  if (now - lastTypingSent < 2000) return;
+  lastTypingSent = now;
+  ws.send(JSON.stringify({ type: 'typing', conversationId: activeConversation }));
+});
+
 $('composer').onsubmit = async (e) => {
   e.preventDefault();
   const input = $('text');
@@ -260,6 +314,7 @@ $('composer').onsubmit = async (e) => {
       return;
     }
     input.value = '';
+    lastTypingSent = 0;
   } catch {
     err.textContent = 'Network error. Try again.';
     err.hidden = false;
