@@ -499,3 +499,133 @@ volume — migrate exits 0 before seed, a message body survives `docker compose
 restart`, a repeated `clientId` returns 200 with `duplicate: true` and one row,
 malformed JSON is a 400 with no stack, an `<img onerror>` title is stored as text
 and rendered through `textContent`, and `npm run reconcile` finds no orphans.
+
+---
+
+## PRE-2 + C1 + C7. Authentication
+
+**Problem.** Every endpoint was open. Identity was `?userId=` in the query string
+and `senderId` in the body, so anyone could read any conversation and post as
+anyone. The WebSocket accepted any upgrade on any path and any subscription.
+
+**Why this solution.** The token travels in an `httpOnly` cookie rather than an
+`Authorization` header or `localStorage`. Script cannot read it, so the stored
+XSS class of bug cannot exfiltrate the credential, and the browser attaches it
+automatically to the WebSocket upgrade — which is the only clean way to
+authenticate a browser socket. The cost is taken knowingly: CSRF stops being
+structurally impossible, so `SameSite=Lax`, an `Origin` check on every
+state-changing request, and keeping `express.json()` as the only body parser are
+the three controls that replace what was previously free.
+
+**Choices worth knowing about.**
+
+- **scrypt, not argon2 or bcrypt.** Both are native addons, and this repo has
+  already lost an afternoon to a `node_modules` built for another platform.
+  scrypt is memory-hard, ships with Node, and OWASP accepts it. Cost parameters
+  live in the hash string so they can be raised without stranding credentials.
+- **Access token is a JWT, refresh token is not.** A stateless refresh token has
+  exactly the "cannot be withdrawn" problem it is meant to solve, so it is an
+  opaque random string in Redis, single-use, rotated on every refresh.
+- **Revocation is a `jti` deny list** with a TTL matching the token's remaining
+  life, so the list bounds itself with no sweep. This is what made the earlier
+  open question moot: Redis was going in for the fan-out and the rate limiter
+  anyway, so revocation cost nothing.
+- **`algorithms: ['HS256']` on verify.** Without an explicit allowlist the
+  header decides, which is `alg:none` and the confusion family.
+- **`password_hash` is nullable.** NULL means "cannot log in", which the login
+  route treats identically to a wrong password. `NOT NULL` with a default would
+  have given every legacy row the same fake credential.
+- **Unknown email and wrong password return the same 401.** Otherwise the login
+  form is an account enumerator.
+- **403 says nothing about existence**, so it cannot be used to walk ids.
+
+**Verification.** 39 tests across four suites, plus by hand against the stack:
+Carol gets 403 on Alice's conversation and 200 on her own, `?userId=1` is inert,
+a `senderId` in the body is ignored, a cross-origin POST is 403, and a token
+captured before logout is refused afterwards.
+
+---
+
+## Search
+
+**Problem.** `GET /api/search` ignored `q` and returned `[]`.
+
+**Why this solution.** A Mongo text index on `message_bodies.body`. The bodies
+already live there, so search stays in the store that holds the text rather than
+duplicating it.
+
+**Choices worth knowing about.**
+
+- **Scoped to the caller's conversations.** Unscoped, search reads every message
+  in the system without guessing an id — strictly worse than the IDOR next to it.
+- **`String(q)` before the query.** Express parses `?q[$ne]=x` into an object and
+  a repeated `?q=` into an array. Either reaches an operator position; the
+  coercion is the whole defence and there is a test for it.
+- Indexes are created at boot from code, since Mongo has no migration story here.
+  `createIndex` is idempotent, so every instance can run it.
+
+**Not done.** No pagination, no highlighting. Ranking is relevance only.
+
+---
+
+## Rate limiting
+
+**Problem.** Nothing stopped someone hammering send.
+
+**Why this solution.** A sliding-window log in a Redis sorted set, keyed on user
+*and* conversation. A counter in process memory would give each instance its own
+allowance, so three instances would mean three times the limit — the state has to
+be shared. A fixed window would have been one `INCR`, but it lets a caller spend
+the full allowance at the end of one window and again at the start of the next,
+making the real burst double the limit.
+
+**Choices worth knowing about.**
+
+- Per user **and** per conversation. One noisy sender must not throttle the room;
+  being limited in one room must not silence someone everywhere.
+- **Fails open.** If Redis is unreachable the limiter logs and allows. Being
+  unable to count should not stop people talking.
+- The client shows the `Retry-After` rather than silently eating the message,
+  which also closes N12: the input is not cleared until the server confirms.
+
+---
+
+## Multi-instance real-time, and the typing indicator
+
+**Problem.** The proxy already spread traffic across instances, but the broadcast
+set lived in one process, so a message reached only the users connected to the
+instance that handled the POST.
+
+**Why this solution.** One Redis channel for every real-time event. Each instance
+publishes and every instance — including the publisher — subscribes and fans out
+to its own sockets. Having the publisher receive its own message keeps a single
+delivery path, so there is no branch where local and remote clients disagree.
+
+**Choices worth knowing about.**
+
+- **The subscription is guarded to once per process.** Attaching twice stacked
+  callbacks on the same channel and delivered every event once per call. The
+  typing test found it: twelve copies of one frame.
+- Typing rides the same channel, so it is multi-instance correct for free.
+- **Typing is throttled separately and dropped, not rejected.** It is far
+  chattier than messages, must not eat the message allowance, and a 429 for a
+  keystroke is noise the client cannot act on.
+- There is no "stopped typing" event, so the indicator expires itself after about
+  four seconds and clears when the message lands.
+
+**Verification.** Under `docker compose up -d --scale api=3`: six sockets spread
+across three instances, one POST, every socket receives it. Seven rapid sends
+through the proxy still yield exactly five accepted, proving one shared window
+rather than one per instance. A typing frame reaches watchers on all three.
+
+---
+
+## Spec
+
+`spec/` held only a `.gitkeep`. It now describes the system as built: the HTTP
+and WebSocket contract with status codes, the data model across all three
+stores and why there are three, the container topology and startup ordering, and
+an explicit list of what is deliberately unfinished.
+
+Written last, deliberately, so it describes what is actually there rather than
+what was planned.
