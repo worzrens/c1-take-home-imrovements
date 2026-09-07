@@ -247,6 +247,12 @@ $('composer').onsubmit = async (e) => {
       json({ conversationId: activeConversation, body, clientId: crypto.randomUUID() }),
     );
 
+    if (res.status === 429) {
+      const retry = res.headers.get('Retry-After') ?? 'a few';
+      err.textContent = `Sending too fast — try again in ${retry}s.`;
+      err.hidden = false;
+      return;
+    }
     if (res.status === 401) return showLogin();
     if (!res.ok) {
       err.textContent = 'Could not send. Try again.';

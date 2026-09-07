@@ -6,6 +6,7 @@ import { searchRouter } from './routes/search.ts';
 import { authRouter } from './routes/auth.ts';
 import { errorHandler } from './http/errors.ts';
 import { authenticate, requireSameOrigin } from './auth/middleware.ts';
+import { limitMessageSends } from './http/rateLimit.ts';
 
 /**
  * Builds the Express app with every route and middleware mounted, but without
@@ -57,7 +58,7 @@ export function createApp() {
   // is closed by default.
   app.use('/api/auth', authRouter);
   app.use('/api/conversations', authenticate, conversationsRouter);
-  app.use('/api/messages', authenticate, messagesRouter);
+  app.use('/api/messages', authenticate, limitMessageSends(), messagesRouter);
   app.use('/api/search', authenticate, searchRouter);
 
   // Must be last: Express only treats a four-argument handler as error
